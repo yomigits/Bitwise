@@ -1,0 +1,265 @@
+
+THIS_DEVICE.OnGUILoaded = function(Name){
+	try{
+		//This function is going to get called by the API whenever a new page is loaded
+		//This is the place to see if we need to do anything for this device
+		//First, make sure the required new API stuff is present
+		
+		if(GUIAPI){
+			GUIAPI.Debug.WriteLine(THIS_DEVICE.Name + " OnGUILoaded");
+			if(GUIAPI.VersionMeetsMinimum(1.8)){
+				//check to see if this page has a Scrolling list we need to populate, which in this case essentially tells us if this page has Roku control
+				if(GUIAPI.PageHasTaggedList(THIS_DEVICE.ListTag)){
+					//Create handlers for our GET and POST responses
+					THIS_DEVICE.RegisterHTTPHandlers();
+					
+					//Initialize the Scrolling List with the list of currently installed apps on the Roku
+					setTimeout(THIS_DEVICE.ShowHomeMenu,200);
+										
+					/***** NOTE FROM MARK
+					
+					We used a setTimeout here because it's important (and polite) to get back out 
+					of this function quickly so that any other Script Device can handle the event as well.
+					
+					*****/
+				}
+				return;
+			}
+		}	
+		//if we got here, it's because the required GUIAPI version wasn't found
+		alert(THIS_DEVICE.Name + " requires GUIAPI support introduced with PE & App version 1.8 or higher");
+			
+	}catch(e){		
+	}	
+};
+
+THIS_DEVICE.RegisterHTTPHandlers = function(){
+	
+	/**** NOTE FROM MARK
+	
+	One cool thing about JavaScript is the ability to create inline anonymous functions.
+	But you already knew that.
+	If you didn't already know that, Google 'javascript anonymous functions and closures'. 
+			
+	*****/
+	
+	//Add tagged response handlers for our HTTP requests
+	GUIAPI.HTTP.AddHandler('PostHandler',function(response){
+		
+	});
+	GUIAPI.HTTP.AddHandler('AppListHandler', function(response){
+		//This function is what will be called asynchronously upon the successfull completion of our request
+		
+		THIS_DEVICE.ParseAppList(response);
+	});
+};
+
+THIS_DEVICE.ShowHomeMenu = function(){
+	try{
+		//Show the default art on the cover art panel
+		
+		//In this case we know that our module's GUI Content includes an image file called roku.png. 
+		//The GUIAPI object gives us an easy way to find a reference to wherever it is being stored.
+		var artPath = GUIAPI.DefaultImageFolder + "roku.png";
+		
+		//Now lets display it, using the Custom Tag of the GUI Panel element we are using for our 'cover art'
+		GUIAPI.SetTaggedImageSource(THIS_DEVICE.ArtTag,artPath);
+		
+		//Get a reference to the ListController bound to the Scrolling List GUI Element with our tag
+		//Any time we want to manipulate a Scrolling List GUI Element, we just need to get a reference to its controller, using the Tag supplied in the GUI Editor
+		var listController = GUIAPI.GetListController(THIS_DEVICE.ListTag);
+		if(listController){
+			//Initialize the Scrolling List appearance
+			listController.Clear();
+			listController.ShowLoading(true);
+			
+			//Request the list of currently installed apps from the Roku player
+			THIS_DEVICE.DoGetRequest('/query/apps','RokuAppListHandler');
+			//The result of this request will be used to populate the Scrolling List
+		}
+		
+	}catch(e){
+	
+	}
+};
+
+THIS_DEVICE.DoGetRequest = function(request,handler){
+	try{
+		//This is really just a convenience wrapper function to do and handle an HTTP GET request. We can re-use this elsewhere in the device so we don't have to build the whole url string, etc.
+		var url = 'http://' + THIS_DEVICE.IP + ':80' + request;
+		//The supplied handler should be the tag we used when registering our HTTP handlers earlier, remember that?
+		GUIAPI.HTTP.DoGET(handler,url);
+	}catch(e){
+		alert('DoGetRequest: ' + e);
+	}
+};
+
+THIS_DEVICE.DoPostRequest = function(request,handler){
+	try{
+		
+		//This is a wrapper function to do and handle an HTTP POST
+		//This gets called from all the device control functions (in the functions tab)
+		var url = 'http://' + THIS_DEVICE.IP + ':8060' + request;
+		GUIAPI.HTTP.DoPOST(handler,url);
+	}catch(e){
+		alert('DoPostRequest: ' + e);
+	}
+};
+
+THIS_DEVICE.ParseAppList = function(response){
+	/***** NOTE FROM MARK
+	
+	This function does a lot of stuff. It is going to take an HTTP response string, decode it, parse it into objects,
+	use those objects to create ListItems, declare handler callbacks for those items, and finally display the list. 
+	It's a little more verbose than necessary, but in this example we'll sacrifice brevity for clarity.
+	
+	*****/
+	
+	try{
+		//If we were doing this on a regular browser we'd be more careful and provide alternatives, but DOMParser is present in WebKit,
+		//so DOMParser is present on iOS & Android. DOMParser seems pretty slow on Android, but this particular xml response is relatively tiny.
+		if(window.DOMParser){
+			try{
+				//First remove percent-escapes form the response string
+				var theXML = decodeURIComponent(response);
+				
+				var parser = new DOMParser();
+				
+				//Parse the response xml into an object
+				var doc = parser.parseFromString(theXML,"text/xml");
+				
+				//Get an array of the individual 'app' children of the xml document/object
+				var apps = doc.getElementsByTagName("app");
+				
+				//Create a placeholder array for all the ListItems we's gonna make
+				var items = new Array();
+				
+				//Loop through the apps array and make a ListItem for each one
+				for (var i=0; i < apps.length; i++){
+				
+					var thisApp = apps[i];
+					var id = thisApp.getAttribute("id");
+					var name = thisApp.childNodes[0].nodeValue;					
+					var iconPath = "http://" +  THIS_DEVICE.IP + ":8060/query/icon/" + id;
+					var touchable = true;
+					
+					//Make a new ListItem with the name and icon art of the app
+					var li = new GUIAPI.ListItem(name,touchable);
+					li.SetThumbnailImageSrc(iconPath);
+					
+					/******	TIP FROM MARK
+					
+					Sometimes you'll want to bind some kind of data to the ListItem that 
+					the base ListItem object doesn't provide a built-in property or method for.
+					JavaScript lets us add new members to objects pretty much at-will, 
+					so we can extend a ListItem however we please. That means we can attach basically
+					any kind of object to the ListItem, and have access to it down the road when our ListItem
+					is selected.
+					I think that's just super.
+					
+					*****/
+					
+					//Here we're going to add a custom property called AppTag to our ListItem. 
+					//In this case it's an id for the Roku app it represents, we'll need this later when we want to switch Roku apps.
+					li.AppTag = id;
+					
+					//Add the new ListItem to our array
+					items.push(li);
+				}
+				
+				//At this point we've created an array of list items.
+				//We're almost ready to display the list, but we still haven't specified what to
+				//do when a ListItem is selected by the user.
+				
+				//Create a callback to be used when an item is selected
+				//It will be called with a reference to the ListItem object that got selected
+				function selectionHandler(item){
+					try{
+						//Remember when we added the custom AppTag property to the ListItems?
+						//Here's where it comes into play
+						var id = item.AppTag;
+						if(id){
+							var artPath = "http://" +  THIS_DEVICE.IP + ":8060/query/icon/" + id;
+							GUIAPI.SetTaggedImageSource(THIS_DEVICE.ArtTag,artPath);
+							THIS_DEVICE.DoPostRequest('/launch/' + id,'PostHandler');
+						}
+					}catch(e){
+						alert(e);
+					}
+				}
+				//This particular implementation doesn't really require the use of special actions when an item is long-pressed
+				//But we'll give it a placeholder callback anyway just in case we want it for something later
+				function longPressHandler(item){
+					try{
+							
+					}catch(e){
+						alert(e);
+					}
+				}
+				//OK, now we have our array of ListItems and we've made a couple of handler callbacks.
+				//Let's go ahead and present the list
+				THIS_DEVICE.DisplayList(items,selectionHandler,longPressHandler);
+				
+			}catch(e){
+			}
+		}
+	}catch(e){
+		
+	}
+};
+
+THIS_DEVICE.DisplayList = function(ListArray,selectionHandler,longPressHandler){
+	/**** NOTE FROM MARK
+	
+	This is a little utility function to display an array of ListItems
+	using the given selection and long-press handlers.
+	This Script Device really only creates ListItems in one spot, but some devices
+	might be creating ListItems from many different functions in the device,
+	so it's handy to have a utility function like this to be called from wherever. 
+	If what follows doesn't make sense, check out the ScrollingListExample.bwe file
+		
+	*****/
+	
+	try{		
+		var listController = GUIAPI.GetListController(THIS_DEVICE.ListTag);
+		if(listController){
+			for(var i = 0; i < ListArray.length; i++){
+				listController.Items.push(ListArray[i]);
+			}
+			listController.SetSelectionHandler(selectionHandler);
+			listController.SetLongPressHandler(longPressHandler);
+			listController.Refresh();			
+		}	
+	}catch(e){		
+	}
+	
+};
+
+
+THIS_DEVICE.DoTextEntry = function(){
+	try{
+		//This is really just a function that makes the process of entering text into the Roku's text fields a little less laborious than using the remote
+		//We're using the standard javascript prompt.
+		var txt = prompt("Enter Text");
+		if(txt != null && txt != ""){
+			for (var i = 0; i < txt.length; i++){
+				/***** NOTE FROM MARK
+				
+				This next bit might look kind of strange to you if you've never experienced
+				the joys of setTimeout calls inside a loop. There are a number of ways to do
+				this, but what I'm doing is making a function that creates another function, which 
+				is what your setTimeout will actually end up calling.
+				Google 'javascript setTimeout loop' for more info on why (and when) this is needed.
+				
+				*****/
+				var f = function(t){
+					return function(){THIS_DEVICE.DoPostRequest('/keypress/Lit_' + encodeURIComponent(t),'PostHandler')};
+				}
+				var func = f(txt[i]);
+				setTimeout(func,(200 * i));
+			}
+		}
+	}catch(e){
+		
+	}
+};
